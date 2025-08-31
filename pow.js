@@ -6,27 +6,47 @@ class POW {
         this.publicSalt = publicSalt;
         this.navigatorData = this.cloneObject(navigator, 0);
         this.numeric = numeric;
-
         this.workerScript = `
         importScripts('https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.0.0/crypto-js.min.js');
 
         self.onmessage = function(e) {
-            const { publicSalt, challenge, start, end, numeric, difficulty, clientNavigator } = e.data;
-
-            function compareObj(obj1, obj2, depth = 0) {
-                if (depth > 4) return "";
-                let mismatches = [];
+            function compareObj(obj1, obj2, iteration) {
+                if (iteration > 4) {
+                    return "";
+                }
                 for (let key in obj1) {
-                    if (key === "rtt") continue;
-                    if (typeof obj1[key] === "function") continue;
+                    if (key == "rtt") {
+                        return "";
+                    }
+                    if (typeof obj1[key] === "function") {
+                        return "";
+                    }
                     if (typeof obj1[key] === "object" && obj1[key] !== null) {
-                        const sub = compareObj(obj1[key], obj2[key], depth + 1);
-                        if (sub) mismatches.push(sub);
-                    } else if (obj1[key] !== obj2[key]) {
-                        mismatches.push(key);
+                        return compareObj(obj1[key], obj2[key], iteration + 1)
+                    } else {
+                        if (obj1[key] !== obj2[key]) {
+                            return key+", ";
+                        }
                     }
                 }
-                return mismatches.join(", ");
+                return "";
+            }
+
+            function incrementHexString(str) {
+                const chars = '0123456789abcdef';
+                let carry = 1;
+                let res = '';
+                for (let i = str.length - 1; i >= 0; i--) {
+                    let index = chars.indexOf(str[i]) + carry;
+                    if (index >= chars.length) {
+                        index = 0;
+                        carry = 1;
+                    } else {
+                        carry = 0;
+                    }
+                    res = chars[index] + res;
+                }
+                return carry ? '0' + res : res;
             }
 
             function getStringByIndex(index, length) {
@@ -39,7 +59,20 @@ class POW {
                 return res.padStart(length, '0');
             }
 
-            let resp = { match: compareObj(navigator, clientNavigator), solution: "", access: "" };
+            const {
+                publicSalt,
+                challenge,
+                start,
+                end,
+                numeric,
+                difficulty,
+                clientNavigator
+            } = e.data;
+            let resp = {
+                match: compareObj(navigator, clientNavigator, 0),
+                solution: "",
+                access: ""
+            };
 
             if (numeric) {
                 for (let i = start; i <= end; i++) {
@@ -70,72 +103,76 @@ class POW {
         `;
     }
 
-    cloneObject(obj, depth) {
-        let clone = {};
-        if (depth > 4) return clone;
-        for (let key in obj) {
-            if (typeof obj[key] !== "object" || obj[key] === null || obj[key] instanceof Function) {
-                if (typeof obj[key] !== "function" && !(obj[key] instanceof HTMLElement)) {
-                    clone[key] = obj[key];
-                }
-            } else {
-                clone[key] = this.cloneObject(obj[key], depth + 1);
-            }
+    cloneObject(obj, iteration) {
+        var clone = {};
+        if (iteration > 4) {
+            return clone;
+        }
+        for (var i in obj) {
+            if (typeof obj[i] == "object" && obj[i] != null && !(obj[i] instanceof Function))
+                clone[i] = this.cloneObject(obj[i], iteration + 1);
+            else if (typeof obj[i] !== 'function' && !(obj[i] instanceof HTMLElement))
+                clone[i] = obj[i];
         }
         return clone;
     }
 
-    spawnWorker(url, start, end) {
-        return new Promise((resolve) => {
-            const worker = new Worker(url);
-            this.workers.push(worker);
+    spawnWorker(url, start, end, resolve, reject) {
+        const worker = new Worker(url);
 
-            worker.onmessage = event => {
-                const data = event.data;
-                if (data.solution !== "") {
-                    this.workers.forEach(w => w.terminate());
-                    resolve(data);
-                } else {
-                    resolve(null);
-                }
-            };
+        this.workers.push(worker);
 
-            worker.postMessage({
-                challenge: this.challenge,
-                publicSalt: this.publicSalt,
-                start,
-                end,
-                numeric: this.numeric,
-                difficulty: this.difficulty,
-                clientNavigator: this.navigatorData
-            });
+        worker.onmessage = (e) => {
+            const res = e.data;
+            if ((res.match == "" || navigator.brave != undefined) && res.solution !== "") {
+                console.log("💀 Solution found, terminating all workers");
+                this.workers.forEach(w => {
+                    w.terminate();
+                });
+                resolve(res);
+            } else {
+                console.log("❌ This worker didn't find a solution. Match: ", res.match);
+                reject("No solution found");
+            }
+        };
+
+        worker.postMessage({
+            challenge: this.challenge,
+            publicSalt: this.publicSalt,
+            start,
+            end,
+            numeric: this.numeric,
+            difficulty: this.difficulty,
+            clientNavigator: this.navigatorData
         });
     }
 
     async Solve() {
-        const cores = Math.min(navigator.hardwareConcurrency || 2, 16);
-        console.log(`🤔 Starting solve with ${cores} workers`);
+        let numWorkers = navigator.hardwareConcurrency || 2;
+        numWorkers = Math.min(numWorkers, 16);
+        console.log(`🤔 Starting solve with ${numWorkers} workers`)
+        const divided = this.numeric ? Math.ceil(this.difficulty / numWorkers) : Math.ceil(Math.pow(16, this.difficulty) / numWorkers);
+        const workers = [];
 
-        const max = this.numeric ? this.difficulty : Math.pow(16, this.difficulty);
-        const chunkSize = Math.ceil(max / cores);
-
-        const blob = new Blob([this.workerScript], { type: "text/javascript" });
+        const blob = new Blob([this.workerScript], {
+            type: 'text/javascript'
+        });
         const url = URL.createObjectURL(blob);
-
-        const promises = [];
-        for (let i = 0; i < max; i += chunkSize) {
-            promises.push(this.spawnWorker(url, i, Math.min(i + chunkSize - 1, max - 1)));
+        for (let i = 0; i < (this.numeric ? this.difficulty : Math.pow(16, this.difficulty)); i += divided) {
+            workers.push(new Promise((resolve, reject) => {
+                this.spawnWorker(url, i, Math.min(i + divided - 1, this.numeric ? this.difficulty - 1 : Math.pow(16, this.difficulty) - 1), resolve, reject);
+            }));
         }
 
         try {
-            const startTime = Date.now();
-            const result = await Promise.any(promises);
-            const endTime = Date.now();
+            const startDate = new Date();
+            const result = await Promise.any(workers);
+            const endDate = new Date();
             console.log("🥳 Heureka", result);
-            console.log("Solved in:", (endTime - startTime) / 1000, "seconds");
+            console.log("Solved In:", (endDate.getTime() - startDate.getTime()) / 1000);
             return result;
-        } catch (err) {
-            console.log("🕵️ No worker found a solution", err);
+        } catch (e) {
+            console.log("🕵️ Something's wrong", e);
             return null;
         }
     }
