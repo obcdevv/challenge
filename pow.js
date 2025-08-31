@@ -8,7 +8,9 @@ class POW {
         this.numeric = numeric;
 
         this.workerScript = `
-        self.onmessage = async function(e) {
+        importScripts('https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.0.0/crypto-js.min.js');
+
+        self.onmessage = function(e) {
             const { publicSalt, challenge, start, end, numeric, difficulty, clientNavigator } = e.data;
 
             function compareObj(obj1, obj2, depth = 0) {
@@ -27,23 +29,6 @@ class POW {
                 return mismatches.join(", ");
             }
 
-            function incrementHexString(str) {
-                const chars = '0123456789abcdef';
-                let carry = 1;
-                let res = '';
-                for (let i = str.length - 1; i >= 0; i--) {
-                    let index = chars.indexOf(str[i]) + carry;
-                    if (index >= chars.length) {
-                        index = 0;
-                        carry = 1;
-                    } else {
-                        carry = 0;
-                    }
-                    res = chars[index] + res;
-                }
-                return carry ? '0' + res : res;
-            }
-
             function getStringByIndex(index, length) {
                 const chars = '0123456789abcdef';
                 let res = '';
@@ -54,20 +39,13 @@ class POW {
                 return res.padStart(length, '0');
             }
 
-            async function sha256(message) {
-                const msgBuffer = new TextEncoder().encode(message);
-                const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-                const hashArray = Array.from(new Uint8Array(hashBuffer));
-                return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-            }
-
             let resp = { match: compareObj(navigator, clientNavigator), solution: "", access: "" };
 
             if (numeric) {
                 for (let i = start; i <= end; i++) {
-                    if ((await sha256(publicSalt + i)) === challenge) {
+                    if (CryptoJS.SHA256(publicSalt + i).toString() === challenge) {
                         resp.solution = i;
-                        resp.access = await sha256(i.toString() + publicSalt);
+                        resp.access = CryptoJS.SHA256(i.toString() + publicSalt).toString();
                         self.postMessage(resp);
                         self.close();
                         return;
@@ -76,9 +54,9 @@ class POW {
             } else {
                 for (let i = start; i <= end; i++) {
                     let current = getStringByIndex(i, difficulty);
-                    if ((await sha256(publicSalt + current)) === challenge) {
+                    if (CryptoJS.SHA256(publicSalt + current).toString() === challenge) {
                         resp.solution = current;
-                        resp.access = await sha256(current + publicSalt);
+                        resp.access = CryptoJS.SHA256(current + publicSalt).toString();
                         self.postMessage(resp);
                         self.close();
                         return;
